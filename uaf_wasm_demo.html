@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>UAF — Real WebAssembly Memory Demo</title>
+  <meta name="description" content="Educational Use-After-Free demo using real WebAssembly.Memory — real byte-level simulation of a browser UAF vulnerability."/>
+  <link rel="stylesheet" href="css/styles.css"/>
+</head>
+<body>
+
+  <!-- ── Header ─────────────────────────────────────────── -->
+  <h1>🔬 UAF Demo — Real WebAssembly Memory</h1>
+  <p class="subtitle">
+    Uses <code>WebAssembly.Memory</code> — actual OS-backed memory pages allocated by Chrome
+  </p>
+  <span class="badge-real">✅ REAL MEMORY ADDRESSES</span>
+
+  <div class="wrap">
+
+    <!-- ── Step Buttons ─────────────────────────────────── -->
+    <div class="steps">
+      <button class="step-btn s1" id="btn1" onclick="step1()">
+        <span class="num">Step 1</span>🟢 Allocate FontObject
+      </button>
+      <button class="step-btn s2" id="btn2" onclick="step2()" disabled>
+        <span class="num">Step 2</span>🔴 Free Memory
+      </button>
+      <button class="step-btn s3" id="btn3" onclick="step3()" disabled>
+        <span class="num">Step 3</span>🟡 Fill Freed Slot
+      </button>
+      <button class="step-btn s4" id="btn4" onclick="step4()" disabled>
+        <span class="num">Step 4</span>🟠 Use Stale Pointer
+      </button>
+      <button class="btn-reset" onclick="resetAll()">↺ Reset</button>
+    </div>
+
+    <!-- ── Hex Dump ──────────────────────────────────────── -->
+    <div class="panel">
+      <div class="panel-title">
+        📦 WebAssembly Linear Memory — Raw Hex Dump (real bytes at real offsets)
+      </div>
+
+      <!-- Legend -->
+      <div class="legend" style="margin-bottom:12px;">
+        <div class="lg-item"><div class="lg-dot" style="background:var(--green)"></div> Magic/Header</div>
+        <div class="lg-item"><div class="lg-dot" style="background:var(--cyan)"></div> String Data</div>
+        <div class="lg-item"><div class="lg-dot" style="background:var(--yellow)"></div> vtable Pointer</div>
+        <div class="lg-item"><div class="lg-dot" style="background:var(--red)"></div> Freed / Garbage</div>
+        <div class="lg-item"><div class="lg-dot" style="background:var(--orange)"></div> Attacker Data</div>
+        <div class="lg-item"><div class="lg-dot" style="background:#ff3860"></div> Fake vtable</div>
+      </div>
+
+      <div style="overflow-x:auto;">
+        <table class="hex-table" id="hexTable">
+          <tbody id="hexBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Pointer State + Struct Inspector ─────────────── -->
+    <div class="two-col">
+
+      <!-- Pointer State -->
+      <div class="panel">
+        <div class="panel-title">🔗 Pointer State</div>
+
+        <div class="ptr-row" id="ptrFontRow">
+          <span class="ptr-name">fontPtr</span>
+          <span class="ptr-eq">=</span>
+          <span class="ptr-val" id="ptrFontVal" style="color:var(--muted)">uninitialized</span>
+          <span class="ptr-status" id="ptrFontStatus"></span>
+        </div>
+
+        <div class="ptr-row" id="ptrNewRow" style="opacity:0.3">
+          <span class="ptr-name">newObjPtr</span>
+          <span class="ptr-eq">=</span>
+          <span class="ptr-val" id="ptrNewVal" style="color:var(--muted)">—</span>
+          <span class="ptr-status" id="ptrNewStatus"></span>
+        </div>
+
+        <div style="margin-top:14px;">
+          <div class="panel-title" style="margin-bottom:8px;">⚡ vtable Call Result</div>
+          <div class="vtable-row">
+            <span class="vt-label">vtable ptr:</span>
+            <span class="vt-val" id="vtableVal" style="color:var(--muted)">—</span>
+            <span class="vt-fn" id="vtableFn"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Struct Inspector -->
+      <div class="panel">
+        <div class="panel-title">
+          🧬 Struct Inspector — 0x<span id="structAddr">????</span> (48 bytes)
+        </div>
+
+        <div class="struct-field">
+          <span class="sf-offset">+0x00</span>
+          <span class="sf-label">magic</span>
+          <span class="sf-value" id="sf-magic" style="color:var(--muted)">—</span>
+          <span class="sf-size">4B</span>
+        </div>
+        <div class="struct-field">
+          <span class="sf-offset">+0x04</span>
+          <span class="sf-label">name[32]</span>
+          <span class="sf-value" id="sf-name" style="color:var(--muted)">—</span>
+          <span class="sf-size">32B</span>
+        </div>
+        <div class="struct-field">
+          <span class="sf-offset">+0x24</span>
+          <span class="sf-label">value</span>
+          <span class="sf-value" id="sf-value" style="color:var(--muted)">—</span>
+          <span class="sf-size">4B</span>
+        </div>
+        <div class="struct-field">
+          <span class="sf-offset">+0x28</span>
+          <span class="sf-label">vtable_ptr</span>
+          <span class="sf-value" id="sf-vtable" style="color:var(--muted)">—</span>
+          <span class="sf-size">4B ⚠️</span>
+        </div>
+        <div class="struct-field">
+          <span class="sf-offset">+0x2C</span>
+          <span class="sf-label">refcount</span>
+          <span class="sf-value" id="sf-refcount" style="color:var(--muted)">—</span>
+          <span class="sf-size">4B</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Memory Event Log ──────────────────────────────── -->
+    <div class="panel">
+      <div class="panel-title">📋 Memory Event Log</div>
+      <div class="log-area" id="logArea">
+        <div class="le">
+          <span class="lt">00:00</span>
+          <span class="lm c-dim">WebAssembly.Memory initialized (64 KB = 1 page). Ready.</span>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /.wrap -->
+
+  <!-- ── Step Modal ──────────────────────────────────────── -->
+  <div class="overlay" id="overlay">
+    <div class="modal">
+      <div class="modal-icon"  id="mIcon">✅</div>
+      <div class="modal-title" id="mTitle">Title</div>
+      <div class="modal-pre"   id="mPre"></div>
+      <div class="modal-body"  id="mBody">Body</div>
+      <button class="modal-btn" onclick="closeModal()">Continue →</button>
+    </div>
+  </div>
+
+  <!-- ── Welcome Modal (shown on page load) ───────────────── -->
+  <div class="overlay" id="welcomeOverlay">
+    <div class="modal welcome-modal">
+      <div class="modal-title">CSS Hack Demo</div>
+      <div class="welcome-subtitle">See how a browser gets tricked through a memory bug</div>
+
+      <div class="welcome-overview">
+        <p>
+          Memory is like a <strong>hotel</strong>. A browser books a room, uses it, checks out —
+          but <em>keeps the key</em>. A hacker moves into that room. The old key still opens it. 💥
+        </p>
+        <div class="welcome-steps">
+          <span class="ws">🟢 Book</span>
+          <span class="ws-arr">→</span>
+          <span class="ws">🔴 Check out</span>
+          <span class="ws-arr">→</span>
+          <span class="ws">🟡 New guest</span>
+          <span class="ws-arr">→</span>
+          <span class="ws">🟠 Old key works!</span>
+        </div>
+      </div>
+
+      <div class="welcome-note">
+        ✅ Safe simulation. No real hacking involved.
+      </div>
+
+      <button class="modal-btn" onclick="closeWelcome()">Let's See It →</button>
+    </div>
+  </div>
+
+  <!-- ── Scripts (load order matters) ──────────────────── -->
+  <script src="js/memory.js"></script>   <!-- WASM memory + constants + state -->
+  <script src="js/ui.js"></script>       <!-- DOM rendering (hex dump etc.)   -->
+  <script src="js/modal.js"></script>    <!-- Modal show / hide               -->
+  <script src="js/steps.js"></script>    <!-- step1–4 + log + resetAll        -->
+
+  <!-- Initial render: empty hex dump + welcome modal -->
+  <script>
+    renderHex(null, 0, '');
+    showWelcome();
+  </script>
+
+</body>
+</html>
